@@ -14,6 +14,8 @@ export type Flow = {
   phase: Phase
   isFinished: boolean
   tasks: PlannedTask[]
+  /** Started by the band itself when a subagent was launched outside a reported flow. */
+  isAuto?: boolean
 }
 
 export type AgentStatus = 'running' | 'done' | 'failed'

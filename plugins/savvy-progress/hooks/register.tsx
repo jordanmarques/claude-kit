@@ -49,6 +49,7 @@ type Lang = 'en' | 'ru' | 'he'
 const STRINGS = {
   en: {
     pane: 'Agents',
+    subagents: 'Subagents',
     cost: 'Cost',
     tokens: 'Tokens',
     time: 'Time',
@@ -80,6 +81,7 @@ const STRINGS = {
   },
   ru: {
     pane: 'Агенты',
+    subagents: 'Субагенты',
     cost: 'Стоимость',
     tokens: 'Токены',
     time: 'Время',
@@ -111,6 +113,7 @@ const STRINGS = {
   },
   he: {
     pane: 'סוכנים',
+    subagents: 'סוכני משנה',
     cost: 'עלות',
     tokens: 'טוקנים',
     time: 'זמן',
@@ -783,6 +786,25 @@ async function togglePane($: EngineInterface): Promise<boolean> {
   return true
 }
 
+// Any subagent launched outside a reported flow counts in a flow the band starts
+// itself: one more task, one more running. A finished or dismissed one starts over.
+async function countSpawn($: EngineInterface): Promise<void> {
+  const prev = await read($, flow)
+  if (prev && !prev.isFinished && !prev.isAuto) return
+  const isNew = !prev || prev.isFinished
+  const base: Flow = isNew ? { ...blank(), title: tr().subagents, phase: 'delegate', isAuto: true } : prev
+  await update($, flow, () => ({ ...base, total: base.total + 1, running: base.running + 1 }))
+  // Each new batch may open the panel again.
+  if (isNew) await update($, panel, p => ({ ...p, autoOpenedFor: '' }))
+}
+
+// One of those subagents answered: the task is done, and the flow when none still runs.
+const settle = (f: Flow | null): Flow | null => {
+  if (!f?.isAuto || f.isFinished) return f
+  const running = Math.max(0, f.running - 1)
+  return { ...f, running, done: Math.min(f.total, f.done + 1), isFinished: running === 0, phase: running === 0 ? 'close' : f.phase }
+}
+
 async function autoOpen($: EngineInterface, key: string): Promise<void> {
   const p = await read($, panel)
   if (p.autoOpenedFor === key) return
@@ -951,8 +973,9 @@ export const register: Register = (on, options) => {
     if (e.subagentType.startsWith('savvy-')) {
       const f = await read($, flow)
       await autoOpen($, f && !f.isFinished ? f.title : 'savvy-flow')
-    } else if (options.autoOpen === 'any') {
-      await autoOpen($, 'any-agent')
+    } else {
+      await countSpawn($)
+      if (options.autoOpen !== 'savvy') await autoOpen($, 'any-agent')
     }
     return started
   })
@@ -999,9 +1022,11 @@ export const register: Register = (on, options) => {
     const agentId = e.agentId
     if (agentId) {
       const at = await $.clock.now()
+      let wasRunning = false
       await update($, agents, list =>
         list.map((a): AgentRun => {
           if (a.agentId !== agentId) return a
+          wasRunning = a.status === 'running'
           // A run whose steps went unseen still gets the turn's own sum.
           const fallback = a.steps === 0 && e.usage
           return {
@@ -1022,6 +1047,7 @@ export const register: Register = (on, options) => {
           }
         }),
       )
+      if (wasRunning) await update($, flow, settle)
       await update($, now, () => at)
     }
     return next(e)
